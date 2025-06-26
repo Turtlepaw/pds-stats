@@ -1,6 +1,6 @@
 import { AtpAgent, CredentialSession } from '@atproto/api';
 import { Host } from '@atproto/api/dist/client/types/com/atproto/sync/listHosts';
-import { Cache } from '../../../cache';
+import { Cache } from '../../cache';
 
 export async function GET(req: Request) {
 	const url = new URL(req.url);
