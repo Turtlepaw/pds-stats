@@ -1,0 +1,22 @@
+{
+	"name": "pds-stats",
+	"version": "0.0.0",
+	"scripts": {
+		"deploy": "wrangler deploy",
+		"dev": "wrangler dev --test-scheduled",
+		"start": "wrangler dev --test-scheduled",
+		"cf-typegen": "wrangler types"
+	},
+	"devDependencies": {
+		"typescript": "^5.5.2",
+		"wrangler": "^4.21.2"
+	},
+	"packageManager": "yarn@4.9.2",
+	"main": "src/index.ts",
+	"repository": "git@tangled.sh:turtlepaw.github.io/pds-stats",
+	"author": "Turtlepaw <81275769+Turtlepaw@users.noreply.github.com>",
+	"license": "MIT",
+	"dependencies": {
+		"@atproto/api": "^0.15.17"
+	}
+}
