@@ -1,9 +1,11 @@
 import { AtpAgent, CredentialSession } from '@atproto/api';
 import { Host } from '@atproto/api/dist/client/types/com/atproto/sync/listHosts';
-import { Cache } from '../../cache';
+import { Cache } from '../../../cache';
+import { CACHE_DURATION, CACHE_KEY_PREFIX, DYNAMIC_CACHE_DURATION } from '../../../constants';
+import { PDSInfo } from '../../../types';
 
-export async function GET(req: Request) {
-	const url = new URL(req.url);
+export async function GET(req: Request, { params }: { params: { hostname?: string[] } }) {
+	const hostname = params.hostname?.[0];
 	const cache = new Cache();
 
 	// CORS headers
@@ -17,12 +19,12 @@ export async function GET(req: Request) {
 		return new Response(null, { headers: corsHeaders });
 	}
 
+	console.log(`Received request for ${hostname}`);
 	// GET /pds/hostname
-	if (url.pathname.startsWith('/pds/')) {
-		const pdsHost = url.pathname.split('/')[2];
-		const cacheKey = `${CACHE_KEY_PREFIX}${pdsHost}`;
+	if (hostname != null && hostname !== '') {
+		const cacheKey = `${CACHE_KEY_PREFIX}${hostname}`;
 
-		if (!pdsHost) {
+		if (!hostname) {
 			return new Response(JSON.stringify({ error: 'PDS host required' }), {
 				status: 400,
 				headers: corsHeaders,
@@ -32,15 +34,15 @@ export async function GET(req: Request) {
 		try {
 			// Check cache first
 			const cachedData = await cache.get(cacheKey);
-			console.log(`Checking cache for ${pdsHost}:`, cachedData ? 'found' : 'not found');
+			console.log(`Checking cache for ${hostname}:`, cachedData ? 'found' : 'not found');
 			let result: PDSInfo;
 			if (cachedData && cachedData) {
 				result = JSON.parse(cachedData);
 			} else {
 				// Dynamic fetch if not cached
-				const count = await fetchPDSAccountCount(pdsHost);
+				const count = await fetchPDSAccountCount(hostname);
 				result = {
-					host: pdsHost,
+					host: hostname,
 					accounts: count,
 					updated_at: new Date().toISOString(),
 					source: 'dynamic',
@@ -53,11 +55,11 @@ export async function GET(req: Request) {
 				headers: { ...corsHeaders, 'Cache-Control': `public, max-age=${DYNAMIC_CACHE_DURATION}` },
 			});
 		} catch (error) {
-			console.error(`Failed to fetch PDS data for ${pdsHost}:`, error);
+			console.error(`Failed to fetch PDS data for ${hostname}:`, error);
 			return new Response(
 				JSON.stringify({
 					error: 'Failed to fetch PDS data',
-					host: pdsHost,
+					host: hostname,
 				}),
 				{
 					status: 500,
@@ -67,21 +69,16 @@ export async function GET(req: Request) {
 		}
 	}
 
-	// GET /pds - list all cached
-	if (url.pathname === '/pds' || url.pathname === '/pds/') {
-		return new Response(
-			JSON.stringify({
-				error: 'PDS host required, please use /pds/<hostname>',
-				host: null,
-			}),
-			{
-				status: 500,
-				headers: corsHeaders,
-			}
-		);
-	}
-
-	return new Response('Not found', { status: 404 });
+	return new Response(
+		JSON.stringify({
+			error: 'PDS host required, please use /pds/<hostname>',
+			host: null,
+		}),
+		{
+			status: 500,
+			headers: corsHeaders,
+		}
+	);
 }
 
 async function fetchAllHosts(agent: AtpAgent): Promise<Host[]> {
