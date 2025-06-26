@@ -1,6 +1,8 @@
-import { AtpAgent } from '@atproto/api';
+import { AtpAgent, CredentialSession } from '@atproto/api';
 
 interface Env {
+	BSKY_PASSWORD: string;
+	BSKY_USERNAME: string;
 	PDS_CACHE: KVNamespace;
 }
 
@@ -11,7 +13,7 @@ interface PDSInfo {
 	source: 'cron' | 'dynamic';
 }
 
-const CACHE_KEY = 'pds_data';
+const CACHE_KEY_PREFIX = 'pds_data:';
 const CACHE_DURATION = 6 * 60 * 60; // 6 hours
 const DYNAMIC_CACHE_DURATION = 60 * 60; // 1 hour
 
@@ -36,6 +38,7 @@ export default {
 		// GET /pds/hostname
 		if (url.pathname.startsWith('/pds/')) {
 			const pdsHost = url.pathname.split('/')[2];
+			const cacheKey = `${CACHE_KEY_PREFIX}${pdsHost}`;
 
 			if (!pdsHost) {
 				return new Response(JSON.stringify({ error: 'PDS host required' }), {
@@ -46,26 +49,25 @@ export default {
 
 			try {
 				// Check cache first
-				const cachedData = env.PDS_CACHE ? await env.PDS_CACHE.get(CACHE_KEY) : null;
+				const cachedData = env.PDS_CACHE ? await env.PDS_CACHE.get(cacheKey) : null;
+				console.log(`Checking cache for ${pdsHost}:`, cachedData ? 'found' : 'not found');
+				let result: PDSInfo;
 				if (cachedData) {
-					const pdsData: PDSInfo[] = JSON.parse(cachedData);
-					const found = pdsData.find((item) => item.host === pdsHost);
+					result = JSON.parse(cachedData);
+				} else {
+					// Dynamic fetch if not cached
+					const count = await fetchPDSAccountCount(pdsHost, env);
+					result = {
+						host: pdsHost,
+						accounts: count,
+						updated_at: new Date().toISOString(),
+						source: 'dynamic',
+					};
 
-					if (found) {
-						return new Response(JSON.stringify(found), {
-							headers: { ...corsHeaders, 'Cache-Control': `public, max-age=${CACHE_DURATION}` },
-						});
-					}
+					await env.PDS_CACHE.put(cacheKey, JSON.stringify(result), {
+						expirationTtl: CACHE_DURATION,
+					});
 				}
-
-				// Dynamic fetch if not cached
-				const count = await fetchPDSAccountCount(pdsHost);
-				const result: PDSInfo = {
-					host: pdsHost,
-					accounts: count,
-					updated_at: new Date().toISOString(),
-					source: 'dynamic',
-				};
 
 				return new Response(JSON.stringify(result), {
 					headers: { ...corsHeaders, 'Cache-Control': `public, max-age=${DYNAMIC_CACHE_DURATION}` },
@@ -87,17 +89,16 @@ export default {
 
 		// GET /pds - list all cached
 		if (url.pathname === '/pds' || url.pathname === '/pds/') {
-			const cachedData = env.PDS_CACHE ? await env.PDS_CACHE.get(CACHE_KEY) : null;
-			if (!cachedData) {
-				return new Response(JSON.stringify({ error: 'No cached data' }), {
-					status: 404,
+			return new Response(
+				JSON.stringify({
+					error: 'PDS host required, please use /pds/<hostname>',
+					host: null,
+				}),
+				{
+					status: 500,
 					headers: corsHeaders,
-				});
-			}
-
-			return new Response(cachedData, {
-				headers: { ...corsHeaders, 'Cache-Control': `public, max-age=${CACHE_DURATION}` },
-			});
+				}
+			);
 		}
 
 		return new Response('Not found', { status: 404 });
@@ -110,28 +111,33 @@ export default {
 
 		for (const pdsHost of KNOWN_PDSES) {
 			try {
-				const count = await fetchPDSAccountCount(pdsHost);
-				pdsData.push({
+				const count = await fetchPDSAccountCount(pdsHost, env);
+				const cacheKey = `${CACHE_KEY_PREFIX}${pdsHost}`;
+
+				const pdsInfo: PDSInfo = {
 					host: pdsHost,
 					accounts: count,
 					updated_at: new Date().toISOString(),
 					source: 'cron',
+				};
+
+				pdsData.push(pdsInfo); // only for in-memory summary (optional)
+
+				await env.PDS_CACHE.put(cacheKey, JSON.stringify(pdsInfo), {
+					expirationTtl: CACHE_DURATION,
 				});
+
 				console.log(`${pdsHost}: ${count} accounts`);
 			} catch (error) {
 				console.error(`Failed to fetch ${pdsHost}:`, error);
 			}
 		}
 
-		await env.PDS_CACHE.put(CACHE_KEY, JSON.stringify(pdsData), {
-			expirationTtl: CACHE_DURATION,
-		});
-
 		console.log(`Updated ${pdsData.length} PDSes`);
 	},
 } satisfies ExportedHandler<Env>;
 
-async function fetchPDSAccountCount(pdsHost: string): Promise<number> {
+async function fetchPDSAccountCount(pdsHost: string, env: Env): Promise<number> {
 	// Get repo count as approximation of account count
 	let totalRepos = 0;
 	let cursor: string | undefined;
@@ -141,11 +147,15 @@ async function fetchPDSAccountCount(pdsHost: string): Promise<number> {
 
 	const baseUrl = pdsHost.startsWith('http') ? pdsHost : `https://${pdsHost}`;
 
-	const agent = new AtpAgent({
-		service: new URL(baseUrl),
-	});
+	const session = new CredentialSession(new URL(baseUrl));
+	if (pdsHost.startsWith('bsky.social'))
+		await session.login({
+			identifier: env.BSKY_USERNAME,
+			password: env.BSKY_PASSWORD,
+		});
+	const agent = new AtpAgent(session);
 
-	while (attempts < 5) {
+	while (attempts < Infinity) {
 		// Limit attempts
 		const response = await agent.com.atproto.sync.listRepos({ cursor, limit: 1000 });
 
