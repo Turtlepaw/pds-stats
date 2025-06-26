@@ -1,16 +1,9 @@
 {
 	"name": "pds-stats",
 	"version": "0.0.0",
-	"scripts": {
-		"deploy": "wrangler deploy",
-		"dev": "wrangler dev --test-scheduled",
-		"start": "wrangler dev --test-scheduled",
-		"cf-typegen": "wrangler types"
-	},
 	"devDependencies": {
 		"@types/node": "^24.0.4",
-		"typescript": "^5.5.2",
-		"wrangler": "^4.21.2"
+		"typescript": "^5.5.2"
 	},
 	"packageManager": "yarn@4.9.2",
 	"main": "src/index.ts",
@@ -20,6 +13,7 @@
 	"dependencies": {
 		"@atproto/api": "^0.15.17",
 		"@upstash/redis": "^1.35.0",
-		"@vercel/node": "^5.3.0"
+		"@vercel/node": "^5.3.0",
+		"next": "^15.3.4"
 	}
 }
