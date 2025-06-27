@@ -4,9 +4,24 @@ import { Cache } from '../../../cache';
 import { CACHE_DURATION, CACHE_KEY_PREFIX, DYNAMIC_CACHE_DURATION } from '../../../constants';
 import { PDSInfo } from '../../../types';
 
+// Tune this value as needed for your environment
+const PDS_FETCH_CONCURRENCY = 40;
+
+// Set to true for fast mode (estimate with first few pages)
+const PDS_FAST_MODE = true;
+const PDS_FAST_MODE_PAGES = 10;
+const PDS_FAST_MODE_MULTIPLIER = 2;
+
+// Fastest mode: fetch only the first 2 pages, sum, and if both are full, return 'at least' that number
+const PDS_FASTEST_MODE = true;
+const PDS_FASTEST_MODE_PAGES = 2;
+const PDS_FASTEST_MODE_LIMIT = 1000;
+
 export async function GET(req: Request, { params }: { params: { hostname?: string[] } }) {
-	const hostname = params.hostname?.[0];
+	const hostname = (await params).hostname?.[0];
 	const cache = new Cache();
+	const startTime = Date.now();
+	console.log(`Received request for PDS data: ${hostname} at ${new Date().toISOString()}`);
 
 	// CORS headers
 	const corsHeaders = {
@@ -33,11 +48,11 @@ export async function GET(req: Request, { params }: { params: { hostname?: strin
 
 		try {
 			// Check cache first
-			const cachedData = await cache.get(cacheKey);
-			console.log(`Checking cache for ${hostname}:`, cachedData ? 'found' : 'not found');
+			const cachedData = null; //(await cache.get(cacheKey)) as PDSInfo | null;
+			console.log(`Checking cache for ${hostname}:`, cachedData, typeof cachedData);
 			let result: PDSInfo;
 			if (cachedData && cachedData) {
-				result = JSON.parse(cachedData);
+				result = cachedData;
 			} else {
 				// Dynamic fetch if not cached
 				const count = await fetchPDSAccountCount(hostname);
@@ -50,6 +65,11 @@ export async function GET(req: Request, { params }: { params: { hostname?: strin
 
 				await cache.set(cacheKey, JSON.stringify(result), CACHE_DURATION);
 			}
+
+			const elapsedMs = Date.now() - startTime;
+			const minutes = Math.floor(elapsedMs / 60000);
+			const seconds = Math.floor((elapsedMs % 60000) / 1000);
+			console.log(`Returning PDS data for ${hostname}:`, result, ' took ', `${minutes} minutes ${seconds} seconds`);
 
 			return new Response(JSON.stringify(result), {
 				headers: { ...corsHeaders, 'Cache-Control': `public, max-age=${DYNAMIC_CACHE_DURATION}` },
@@ -108,15 +128,24 @@ async function recurseFetchBlueskyPdsCollection(): Promise<number> {
 	const agent = new AtpAgent(session);
 	const pdsList = await fetchAllHosts(agent);
 	let accounts = 0;
-	for (const pds of pdsList) {
-		try {
-			const count = await fetchPDSAccountCount(pds.hostname);
-			accounts += count;
-			console.log(`PDS: ${pds.hostname}, Accounts: ${count}`);
-		} catch (error) {
-			console.error(`Failed to fetch accounts for PDS ${pds.hostname}:`, error);
+
+	let index = 0;
+
+	async function worker() {
+		while (index < pdsList.length) {
+			const myIndex = index++;
+			const pds = pdsList[myIndex];
+			try {
+				accounts += pds.accountCount || 0;
+				console.log(`PDS: ${pds.hostname}, Accounts: ${pds.accountCount}`);
+			} catch (error) {
+				console.error(`Failed to fetch accounts for PDS ${pds.hostname}:`, error);
+			}
 		}
 	}
+
+	// Start workers with increased concurrency
+	await Promise.all(Array.from({ length: PDS_FETCH_CONCURRENCY }, worker));
 	return accounts;
 }
 
@@ -139,9 +168,12 @@ async function fetchPDSAccountCount(pdsHost: string): Promise<number> {
 	const session = new CredentialSession(new URL(baseUrl));
 	const agent = new AtpAgent(session);
 
-	while (attempts < Infinity) {
-		// Limit attempts
-		const response = await agent.com.atproto.sync.listRepos({ cursor, limit: 1000 });
+	let pageCount = 0;
+	let lastPageLength = 0;
+	let allPagesFull = true;
+
+	while (attempts < PDS_FASTEST_MODE_PAGES) {
+		const response = await agent.com.atproto.sync.listRepos({ cursor, limit: PDS_FASTEST_MODE_LIMIT });
 
 		if (!response.success) {
 			if (attempts === 0) throw new Error(`Failed to fetch repos from ${pdsHost}`);
@@ -149,11 +181,28 @@ async function fetchPDSAccountCount(pdsHost: string): Promise<number> {
 		}
 
 		const data = response.data;
-		totalRepos += data.repos?.length || 0;
+		const reposLength = data.repos?.length || 0;
+		totalRepos += reposLength;
+		lastPageLength = reposLength;
+		pageCount++;
 
-		if (!data.cursor || !data.repos?.length) break;
+		if (reposLength < PDS_FASTEST_MODE_LIMIT) {
+			allPagesFull = false;
+		}
+
+		if (!data.cursor || !reposLength) break;
 		cursor = data.cursor;
 		attempts++;
+	}
+
+	if (PDS_FASTEST_MODE) {
+		if (allPagesFull) {
+			console.log(`Fastest mode: at least ${totalRepos} repos for ${pdsHost} (all sampled pages full)`);
+			return totalRepos; // Optionally, return `${totalRepos}+` to indicate lower bound
+		} else {
+			console.log(`Fastest mode: ${totalRepos} repos for ${pdsHost} (last page not full)`);
+			return totalRepos;
+		}
 	}
 
 	return totalRepos;

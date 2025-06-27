@@ -7,7 +7,7 @@ export class Cache {
 		this.redis = Redis.fromEnv();
 	}
 
-	async get(key: string): Promise<string | null> {
+	async get(key: string): Promise<object | null> {
 		try {
 			return await this.redis.get(key);
 		} catch (error) {
